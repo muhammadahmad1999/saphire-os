@@ -1,0 +1,1 @@
+The QEMU environment introduced in the book '64-bit multi-core OS principles and structure' is version 0.10.4, so if you use the latest QEMU, the OS will not load properly. I am using QEMU 2 version, and the bootloader needs to be modified to resolve this. It works if you change cmp al, 19 in line 80 of Bootloader.asm to cmp al, 37.
