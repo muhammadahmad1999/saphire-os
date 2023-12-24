@@ -1,23 +1,9 @@
-/**
- *  file    Main.c
- *  date    2009/01/09
- *  author  kkamagui 
- *          Copyright(c)2008 All rights reserved by kkamagui
- *  brief   키보드 디바이스 드라이버에 관련된 소스 파일
- */
-
 #include "Types.h"
 #include "AssemblyUtility.h"
 #include "Keyboard.h"
+#include "Queue.h"
+#include "Utility.h"
 
-////////////////////////////////////////////////////////////////////////////////
-//
-// 키보드 컨트롤러 및 키보드 제어에 관련된 함수들
-//
-////////////////////////////////////////////////////////////////////////////////
-/**
- *  출력 버퍼(포트 0x60)에 수신된 데이터가 있는지 여부를 반환
- */
 BOOL kIsOutputBufferFull( void )
 {
     // 상태 레지스터(포트 0x64)에서 읽은 값에 출력 버퍼 상태 비트(비트 0)가
@@ -43,13 +29,45 @@ BOOL kIsInputBufferFull( void )
     return FALSE;
 }
 
+BOOL kWaitForACKAndPutOtherScanCode(void)
+{
+    int i, j;
+    BYTE bData;
+    BOOL bResult = FALSE;
+
+    for (j = 0; j < 100; j++)
+    {
+        for (i = 0; i < 0xFFFF; i++)
+        {
+            if (kIsOutputBufferFull() == TRUE)
+                break;
+        }
+
+        bData = kInPortByte(0x60);
+        if (bData == 0xFA)
+        {
+            bResult = TRUE;
+            break;   
+        }
+        else 
+        {
+            kConvertScanCodeAndPutQueue(bData);
+        }
+    }
+
+    return bResult;
+}
+
 /**
  *  키보드를 활성화
  */
 BOOL kActivateKeyboard( void )
 {
-    int i;
-    int j;
+    int i, j;
+    BOOL bPreviousInterrupt;
+    BOOL bResult;
+
+    bPreviousInterrupt = kSetInterruptFlag(FALSE);
 
     // 컨트롤 레지스터(포트 0x64)에 키보드 활성화 커맨드(0xAE)를 전달하여
     // 키보드 디바이스 활성화
@@ -69,29 +87,11 @@ BOOL kActivateKeyboard( void )
     // 입력 버퍼(포트 0x60)로 키보드 활성화(0xF4) 커맨드를 전달하여 키보드로 전송
     kOutPortByte( 0x60, 0xF4 );
 
-    // ACK가 올 때까지 대기함
-    // ACK가 오기 전에 키보드 출력 버퍼(포트 0x60)에 키 데이터가 저장될 수 있으므로
-    // 키보드에서 전달된 데이터를 최대 100개까지 수신하여 ACK를 확인
-    for( j = 0 ; j < 100 ; j++ )
-    {
-        // 0xFFFF만큼 루프를 수행할 시간이면 충분히 커맨드의 응답이 올 수 있음
-        // 0xFFFF 루프를 수행한 이후에도 출력 버퍼(포트 0x60)가 차 있지 않으면 무시하고 읽음
-        for( i = 0 ; i < 0xFFFF ; i++ )
-        {
-            // 출력 버퍼(포트 0x60)가 차있으면 데이터를 읽을 수 있음
-            if( kIsOutputBufferFull() == TRUE )
-            {
-                break;
-            }
-        }
+    bResult = kWaitForACKAndPutOtherScanCode();
 
-        // 출력 버퍼(포트 0x60)에서 읽은 데이터가 ACK(0xFA)이면 성공
-        if( kInPortByte( 0x60 ) == 0xFA )
-        {
-            return TRUE;
-        }
-    }
-    return FALSE;
+    kSetInterruptFlag(bPreviousInterrupt);
+    
+    return bResult;
 }
 
 /**
@@ -113,6 +113,11 @@ BYTE kGetKeyboardScanCode( void )
 BOOL kChangeKeyboardLED( BOOL bCapsLockOn, BOOL bNumLockOn, BOOL bScrollLockOn )
 {
     int i, j;
+    BOOL bPreviousInterrupt;
+    BOOL bResult;
+    BYTE bData;
+
+    bPreviousInterrupt = kSetInterruptFlag(FALSE);
 
     // 키보드에 LED 변경 커맨드 전송하고 커맨드가 처리될 때까지 대기
     for( i = 0 ; i < 0xFFFF ; i++ )
@@ -135,26 +140,11 @@ BOOL kChangeKeyboardLED( BOOL bCapsLockOn, BOOL bNumLockOn, BOOL bScrollLockOn )
         }
     }
 
-    // 키보드가 LED 상태 변경 커맨드를 가져갔으므로 ACK가 올때까지 대기
-    for( j = 0 ; j < 100 ; j++ )
-    {
-        for( i = 0 ; i < 0xFFFF ; i++ )
-        {
-            // 출력 버퍼(포트 0x60)가 차있으면 데이터를 읽을 수 있음
-            if( kIsOutputBufferFull() == TRUE )
-            {
-                break;
-            }
-        }
+    bResult = kWaitForACKAndPutOtherScanCode();
 
-        // 출력 버퍼(포트 0x60)에서 읽은 데이터가 ACK(0xFA)이면 성공
-        if( kInPortByte( 0x60 ) == 0xFA )
-        {
-            break;
-        }
-    }
-    if( j >= 100 )
+    if (bResult == FALSE)
     {
+        kSetInterruptFlag(bPreviousInterrupt);
         return FALSE;
     }
 
@@ -169,30 +159,11 @@ BOOL kChangeKeyboardLED( BOOL bCapsLockOn, BOOL bNumLockOn, BOOL bScrollLockOn )
         }
     }
 
-    // 키보드가 LED 데이터를 가져갔으므로 ACK가 올 때까지 대기함
-    for( j = 0 ; j < 100 ; j++ )
-    {
-        for( i = 0 ; i < 0xFFFF ; i++ )
-        {
-            // 출력 버퍼(포트 0x60)가 차있으면 데이터를 읽을 수 있음
-            if( kIsOutputBufferFull() == TRUE )
-            {
-                break;
-            }
-        }
+    bResult = kWaitForACKAndPutOtherScanCode();
 
-        // 출력 버퍼(포트 0x60)에서 읽은 데이터가 ACK(0xFA)이면 성공
-        if( kInPortByte( 0x60 ) == 0xFA )
-        {
-            break;
-        }
-    }
-    if( j >= 100 )
-    {
-        return FALSE;
-    }
+    kSetInterruptFlag(bPreviousInterrupt);
 
-    return TRUE;
+    return bResult;
 }
 
 /**
@@ -274,6 +245,9 @@ void kReboot( void )
 ////////////////////////////////////////////////////////////////////////////////
 // 키보드 상태를 관리하는 키보드 매니저
 static KEYBOARDMANAGER gs_stKeyboardManager = { 0, };
+
+static QUEUE gs_stKeyQueue;
+static KEYDATA gs_vstKeyQueueBuffer[KEY_MAX_QUEUE_COUNT];
 
 // 스캔 코드를 ASCII 코드로 변환하는 테이블
 static KEYMAPPINGENTRY gs_vstKeyMappingTable[ KEY_MAPPINGTABLEMAXCOUNT ] =
@@ -588,3 +562,48 @@ BOOL kConvertScanCodeToASCIICode( BYTE bScanCode, BYTE* pbASCIICode, BOOL* pbFla
     UpdateCombinationKeyStatusAndLED( bScanCode );
     return TRUE;
 }
+
+BOOL kInitialiseKeyboard(void)
+{
+    kInitialiseQueue(&gs_stKeyQueue, gs_vstKeyQueueBuffer, KEY_MAX_QUEUE_COUNT, sizeof(KEYDATA));
+
+    return kActivateKeyboard();
+}
+
+BOOL kConvertScanCodeAndPutQueue(BYTE bScanCode)
+{
+    KEYDATA stData;
+    BOOL bResult = FALSE;
+    BOOL bPreviousInterrupt;
+
+    stData.bScanCode = bScanCode;
+
+    if (kConvertScanCodeToASCIICode(bScanCode, &stData.bASCIICode, &stData.bFlags) == TRUE)
+    {
+        bPreviousInterrupt = kSetInterruptFlag(FALSE);
+
+        bResult = kPutQueue(&gs_stKeyQueue, &stData);
+
+        kSetInterruptFlag(bPreviousInterrupt);
+    }
+
+    return bResult;
+}
+
+BOOL kGetKeyFromKeyQueue(KEYDATA* pstData)
+{
+    BOOL bResult;
+    BOOL bPreviousInterrupt;
+
+    if (kIsQueueEmpty(&gs_stKeyQueue) == TRUE)
+        return FALSE;
+
+    bPreviousInterrupt = kSetInterruptFlag(FALSE);
+
+    bResult = kGetQueue(&gs_stKeyQueue, pstData);
+
+    kSetInterruptFlag(bPreviousInterrupt);
+
+    return bResult;
+}
+
